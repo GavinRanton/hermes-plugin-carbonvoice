@@ -73,6 +73,44 @@ TRANSIENT_RETRY_ATTEMPTS = 2
 TRANSIENT_RETRY_BACKOFF_S = 0.4
 TRANSIENT_STATUS = (502, 503, 504)
 
+# ── Activity signals ────────────────────────────────────────────────────
+# POST /v5/conversations/:id/signal broadcasts an ephemeral "the agent is
+# working" indicator to clients viewing the conversation (cv-api CV-13490).
+# It is stateless server-side: a signal must be re-posted every ~1-2s to stay
+# visible and simply stops being sent to clear it. Hermes core drives the
+# heartbeat via its ~2s send_typing loop.
+SIGNAL_TTL_MS = 4_000            # client-side expiry hint; kept above the ~2s
+                                 # re-post cadence so one skipped beat doesn't
+                                 # drop the indicator
+SIGNAL_BODY_MAX = 200            # server rejects a body over 200 chars (400)
+SIGNAL_REQUEST_TIMEOUT_S = 2.0   # short: a slow signal POST must not back up
+                                 # the ~2s typing loop
+SIGNAL_ERROR_COOLDOWN_S = 10.0   # CV's gateway bursts 502s; after a failure,
+                                 # pause signals for that conversation instead
+                                 # of hammering every ~2s (mirrors the upstream
+                                 # Signal adapter's typing backoff)
+
+# Map Hermes core's status_callback event kinds → the CV ConversationSignalType
+# enum (typing | thinking | tool_call | searching | processing). Unmapped kinds
+# fall back to SIGNAL_TYPE_DEFAULT — lifecycle/context-pressure notices read as
+# generic "processing".
+SIGNAL_TYPE_BY_KIND = {
+    "thinking": "thinking",
+    "_thinking": "thinking",
+    "reasoning": "thinking",
+    "reasoning.available": "thinking",
+    "tool": "tool_call",
+    "tool.started": "tool_call",
+    "tool_call": "tool_call",
+    "search": "searching",
+    "searching": "searching",
+    "lifecycle": "processing",
+    "session:compress": "processing",
+    "status": "processing",
+}
+SIGNAL_TYPE_DEFAULT = "processing"
+
+
 # "acknowledged" is a built-in Carbon Voice reaction id — works out of the
 # box without operator config. Override with CARBONVOICE_REACTION_ID after
 # inspecting the available reactions logged on startup.
