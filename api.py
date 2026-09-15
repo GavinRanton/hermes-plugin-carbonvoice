@@ -23,6 +23,8 @@ from .constants import (
     AGENT_ID_HEADER,
     DEFAULT_BASE_URL,
     HTTP_TIMEOUT,
+    SIGNAL_BODY_MAX,
+    SIGNAL_REQUEST_TIMEOUT_S,
     TRANSIENT_RETRY_ATTEMPTS,
     TRANSIENT_RETRY_BACKOFF_S,
     TRANSIENT_STATUS,
@@ -726,6 +728,44 @@ class CarbonVoiceAPI:
         resp.raise_for_status()
         data = resp.json()
         return data if isinstance(data, list) else []
+
+    async def send_signal(
+        self,
+        conversation_id: str,
+        signal_type: str,
+        *,
+        body: Optional[str] = None,
+        ttl_ms: Optional[int] = None,
+        message_id: Optional[str] = None,
+        timeout: float = SIGNAL_REQUEST_TIMEOUT_S,
+    ) -> None:
+        """POST /v5/conversations/{id}/signal — ephemeral activity indicator.
+
+        Broadcasts a transient "the agent is <thinking/working>" signal to
+        clients viewing the conversation (cv-api CV-13490). Stateless
+        server-side: nothing is stored, so the signal must be re-sent every
+        ~1-2s to stay visible and simply stops being sent to clear it.
+        ``ttl_ms`` (500-30000) is a client-side expiry hint; ``is_agent`` is
+        stamped server-side from the PAT identity; ``body`` is trimmed to the
+        server's 200-char cap to avoid a 400. Never retried — a missed
+        heartbeat is harmless — and given a short per-request ``timeout`` so a
+        slow POST can't back up the caller's ~2s loop. Raises like the other
+        methods; the adapter's signal helper swallows and backs off.
+        """
+        client = self._require_client()
+        payload: Dict[str, Any] = {"signal_type": signal_type}
+        if body:
+            payload["body"] = body[:SIGNAL_BODY_MAX]
+        if ttl_ms is not None:
+            payload["ttl_ms"] = ttl_ms
+        if message_id:
+            payload["message_id"] = message_id
+        resp = await client.post(
+            f"/v5/conversations/{conversation_id.strip()}/signal",
+            json=payload,
+            timeout=timeout,
+        )
+        resp.raise_for_status()
 
     async def react(self, reaction_id: str, message_id: str) -> None:
         """POST /reactions/{reaction_id}/{message_id} — empty body.

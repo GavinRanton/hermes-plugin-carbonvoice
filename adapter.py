@@ -64,6 +64,10 @@ from .constants import (
     DEFAULT_STUCK_MAX_AGE_S,
     DEFAULT_WS_RETRY_MAX_MS,
     MAX_MESSAGE_LENGTH,
+    SIGNAL_ERROR_COOLDOWN_S,
+    SIGNAL_TTL_MS,
+    SIGNAL_TYPE_BY_KIND,
+    SIGNAL_TYPE_DEFAULT,
     STUCK_RETRY_DELAY_S,
 )
 from .dedupe import SeenCache
@@ -215,6 +219,11 @@ class CarbonVoiceAdapter(BasePlatformAdapter):
             or 90
         )
         self._last_sent: Dict[str, "tuple[str, float]"] = {}
+        # Per-conversation cooldown for activity signals. CV's gateway bursts
+        # 502s and the signal heartbeat fires every ~2s, so on failure we pause
+        # signals for that conversation (monotonic deadline) rather than retry
+        # every beat and spam logs — mirrors the upstream Signal adapter.
+        self._signal_skip_until: Dict[str, float] = {}
         # Serialize message fetches. Every WS ``message:created`` /
         # ``message:updated`` event (and each reconnect) fires on_tick →
         # _fetch_missed_messages. A burst of events would otherwise run many
@@ -492,8 +501,76 @@ class CarbonVoiceAdapter(BasePlatformAdapter):
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
 
+    async def _emit_signal(
+        self,
+        chat_id: str,
+        signal_type: str,
+        *,
+        body: Optional[str] = None,
+        message_id: Optional[str] = None,
+    ) -> bool:
+        """Fire one ephemeral activity signal, best-effort.
+
+        Never raises: a signal is a heartbeat, so a failed beat must not crash
+        agent processing. On failure we pause signals for this conversation for
+        SIGNAL_ERROR_COOLDOWN_S (CV bursts 502s; retrying every ~2s would just
+        spam) and log once at debug. Returns True when the POST succeeded.
+        """
+        if self._api is None or not chat_id:
+            return False
+        now_m = time.monotonic()
+        if now_m < self._signal_skip_until.get(chat_id, 0.0):
+            return False
+        try:
+            await self._api.send_signal(
+                chat_id,
+                signal_type,
+                body=body,
+                ttl_ms=SIGNAL_TTL_MS,
+                message_id=message_id,
+            )
+            self._signal_skip_until.pop(chat_id, None)
+            return True
+        except Exception as exc:
+            if chat_id not in self._signal_skip_until:
+                logger.debug(
+                    "carbonvoice: signal %s failed for %s, cooling down %.0fs: %s",
+                    signal_type, chat_id, SIGNAL_ERROR_COOLDOWN_S, exc,
+                )
+            self._signal_skip_until[chat_id] = now_m + SIGNAL_ERROR_COOLDOWN_S
+            return False
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        return None
+        """Heartbeat a "thinking" activity signal while the agent works.
+
+        Hermes core calls this every ~2s for the whole duration of agent
+        processing (the ``_keep_typing`` loop), which is exactly CV's required
+        re-post cadence. CV has no native typing channel, so we ride the
+        ephemeral signal endpoint instead. Best-effort; see ``_emit_signal``.
+        """
+        await self._emit_signal(chat_id, "thinking")
+
+    async def send_or_update_status(
+        self,
+        chat_id: str,
+        status_key: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Route a core status notice to an ephemeral signal instead of a message.
+
+        Core's ``status_callback`` (lifecycle / context-pressure notices such as
+        compression) is delivered here; adapters that implement this method are
+        preferred over a plain ``send`` (gateway ``_send_or_update_status_coro``).
+        On CV there is no bubble to edit — the signal is itself ephemeral — so
+        each call just emits one signal, keyed by ``status_key`` → CV
+        signal_type. We return a SendResult with no ``message_id`` so core's
+        status cleanup has nothing to delete (the signal expires on its own).
+        """
+        signal_type = SIGNAL_TYPE_BY_KIND.get(status_key, SIGNAL_TYPE_DEFAULT)
+        message_id = first_str((metadata or {}).get("message_id")) if metadata else None
+        ok = await self._emit_signal(chat_id, signal_type, body=content, message_id=message_id)
+        return SendResult(success=ok, message_id=None)
 
     async def send_voice(
         self,
