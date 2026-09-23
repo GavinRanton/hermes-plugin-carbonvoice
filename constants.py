@@ -82,6 +82,15 @@ TRANSIENT_STATUS = (502, 503, 504)
 SIGNAL_TTL_MS = 4_000            # client-side expiry hint; kept above the ~2s
                                  # re-post cadence so one skipped beat doesn't
                                  # drop the indicator
+SIGNAL_CLEAR_TTL_MS = 500        # ttl on the turn-ending clear beat. cv-api
+                                 # clamps ttl_ms to [500, 30000] and the signal
+                                 # endpoint has no delete verb, so the smallest
+                                 # legal lease IS the clear: re-asserting the
+                                 # current phase with this ttl on turn end drops
+                                 # the dot within ~1s instead of waiting out the
+                                 # full SIGNAL_TTL_MS lease (up to ~4s after the
+                                 # reply is already visible). Mirrors the
+                                 # cv-agents ActivityLease.stop() clear.
 SIGNAL_BODY_MAX = 200            # server rejects a body over 200 chars (400)
 SIGNAL_REQUEST_TIMEOUT_S = 2.0   # short: a slow signal POST must not back up
                                  # the ~2s typing loop
