@@ -64,6 +64,7 @@ from .constants import (
     DEFAULT_STUCK_MAX_AGE_S,
     DEFAULT_WS_RETRY_MAX_MS,
     MAX_MESSAGE_LENGTH,
+    SIGNAL_CLEAR_TTL_MS,
     SIGNAL_ERROR_COOLDOWN_S,
     SIGNAL_TTL_MS,
     SIGNAL_TYPE_BY_KIND,
@@ -224,6 +225,11 @@ class CarbonVoiceAdapter(BasePlatformAdapter):
         # signals for that conversation (monotonic deadline) rather than retry
         # every beat and spam logs — mirrors the upstream Signal adapter.
         self._signal_skip_until: Dict[str, float] = {}
+        # Last activity signal_type shown per conversation, recorded on every
+        # successful beat. stop_typing re-asserts THIS phase with a min ttl so
+        # the turn-ending clear matches whatever the dot currently reads
+        # (thinking / tool_call / …) instead of flipping it before it clears.
+        self._signal_last_type: Dict[str, str] = {}
         # Serialize message fetches. Every WS ``message:created`` /
         # ``message:updated`` event (and each reconnect) fires on_tick →
         # _fetch_missed_messages. A burst of events would otherwise run many
@@ -508,6 +514,8 @@ class CarbonVoiceAdapter(BasePlatformAdapter):
         *,
         body: Optional[str] = None,
         message_id: Optional[str] = None,
+        ttl_ms: int = SIGNAL_TTL_MS,
+        record: bool = True,
     ) -> bool:
         """Fire one ephemeral activity signal, best-effort.
 
@@ -515,6 +523,12 @@ class CarbonVoiceAdapter(BasePlatformAdapter):
         agent processing. On failure we pause signals for this conversation for
         SIGNAL_ERROR_COOLDOWN_S (CV bursts 502s; retrying every ~2s would just
         spam) and log once at debug. Returns True when the POST succeeded.
+
+        ``ttl_ms`` overrides the default lease length — stop_typing passes the
+        min ttl for the turn-ending clear. ``record`` tracks the phase now
+        showing in ``_signal_last_type`` (so stop_typing can re-assert it); the
+        clear beat itself passes ``record=False`` so it doesn't re-arm the state
+        it is tearing down.
         """
         if self._api is None or not chat_id:
             return False
@@ -526,10 +540,12 @@ class CarbonVoiceAdapter(BasePlatformAdapter):
                 chat_id,
                 signal_type,
                 body=body,
-                ttl_ms=SIGNAL_TTL_MS,
+                ttl_ms=ttl_ms,
                 message_id=message_id,
             )
             self._signal_skip_until.pop(chat_id, None)
+            if record:
+                self._signal_last_type[chat_id] = signal_type
             return True
         except Exception as exc:
             if chat_id not in self._signal_skip_until:
@@ -549,6 +565,34 @@ class CarbonVoiceAdapter(BasePlatformAdapter):
         ephemeral signal endpoint instead. Best-effort; see ``_emit_signal``.
         """
         await self._emit_signal(chat_id, "thinking")
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Clear the activity dot promptly at turn end.
+
+        Hermes core calls this from ``_keep_typing``'s ``finally`` on EVERY exit
+        path (reply, error, early return) right after it stops the ~2s
+        ``send_typing`` heartbeat. CV's signal endpoint is stateless with no
+        delete verb, so simply ceasing to beat leaves the dot lingering until
+        the SIGNAL_TTL_MS lease expires — up to ~4s after the reply is already
+        visible, i.e. a stuck "thinking…". Instead we emit one final beat
+        re-asserting the CURRENT phase with the minimum legal ttl
+        (SIGNAL_CLEAR_TTL_MS) so clients drop the dot within ~1s. Mirrors the
+        cv-agents ActivityLease.stop() clear (PhononX/cv-agents#6) and the
+        upstream Signal adapter's stop_typing.
+
+        Best-effort (rides ``_emit_signal``, which never raises and honours the
+        per-conversation error cooldown) and idempotent: the phase is popped
+        first, so a second stop (core may stop more than once) finds nothing and
+        emits nothing rather than re-flashing the dot.
+        """
+        if not chat_id:
+            return
+        last_type = self._signal_last_type.pop(chat_id, None)
+        if last_type is None:
+            return
+        await self._emit_signal(
+            chat_id, last_type, ttl_ms=SIGNAL_CLEAR_TTL_MS, record=False
+        )
 
     async def send_or_update_status(
         self,
