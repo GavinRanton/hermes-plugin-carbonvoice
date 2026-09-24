@@ -15,7 +15,6 @@ import sys
 import types
 
 import httpx
-import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent  # repo root (package dir)
 

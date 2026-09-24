@@ -51,26 +51,25 @@ def now_utc() -> "datetime":
 def extract_transcript(msg: Dict[str, Any]) -> str:
     """Pull the human-readable transcript from a CV message payload.
 
-    Shape compatibility — checked in order so the V5 source-of-truth
-    payload wins, with the older shapes kept as fallback for the brief
-    window between socket signal and the v5 GET enrichment (and for
-    webhook callers that haven't migrated yet):
+    Shape compatibility, checked in order:
 
-      - **V5 / GET ``/v5/messages/:id``**: top-level ``transcript`` string.
-      - **V2 (socket push, ``/v3/messages/recent``)**: ``text_models[]``
-        with one entry of ``type == "transcript"`` carrying either a
-        joined ``timecodes[].t`` walk or a ``value`` string.
+      - **V5**: top-level ``transcript`` string. No longer fetched (REST
+        reads moved to v6) but kept for callers that still pass it.
+      - **Legacy (socket push, and every v6 read after**
+        :func:`normalize_v6`**)**: ``text_models[]`` with one entry of
+        ``type == "transcript"`` carrying either a joined
+        ``timecodes[].t`` walk or a ``value`` string.
       - **Webhook**: ``transcript_txt`` or ``ai_summary_txt`` flat
         strings.
 
     When the message is still being transcribed all of these are empty;
     callers must treat an empty return as "not ready yet" and retry.
     """
-    # V5 — preferred. Single source of truth per cv-api design.
+    # V5 — top-level string.
     v5_transcript = msg.get("transcript")
     if isinstance(v5_transcript, str) and v5_transcript.strip():
         return v5_transcript.strip()
-    # V2 — socket / v3-poll fallback.
+    # Legacy — socket push and normalised v6 reads.
     text_models = msg.get("text_models") or []
     if isinstance(text_models, list):
         for m in text_models:

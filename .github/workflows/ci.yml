@@ -332,7 +332,7 @@ jobs:
               'upload_to_s3',          # direct S3 PUT (PR 5)
               'update_attachment',     # attachment status flip (PR 5)
               'get_channel',           # channel metadata + collaborator roster
-              'whoami', 'fetch_recent', 'fetch_reactions', 'react', 'mark_read',
+              'whoami', 'fetch_message_updates', 'fetch_reactions', 'react', 'mark_read',
           ):
               assert hasattr(CarbonVoiceAPI, method), f'CarbonVoiceAPI is missing {method}'
           print(f'CarbonVoiceAPI surface: {sum(1 for m in dir(CarbonVoiceAPI) if not m.startswith("_"))} public methods')
@@ -793,7 +793,7 @@ jobs:
 
           # Stuck-message cursor hold: when a transcript isn't ready,
           # _process_message returns None (not False), and the poll loop
-          # holds the cursor just before the first stuck message instead
+          # holds the cursor at the page of the first stuck message instead
           # of advancing past it (which could skip a message whose
           # transcript never bumps updated_at in time). Mirrors the Claude
           # Code Channel's null-return + stuck-message handling.
@@ -801,9 +801,10 @@ jobs:
               '_process_message must return Optional[bool] (True=dispatched, ' \
               'False=skip, None=stuck) so the cursor can distinguish a ' \
               'not-ready transcript from a permanent skip'
-          assert 'first_stuck_idx' in adapter_src, \
-              '_fetch_missed_messages must track the first stuck message ' \
-              'and hold the cursor before it (stuck-message handling)'
+          assert 'first_stuck_page' in adapter_src, \
+              '_fetch_missed_messages must track the first page holding a ' \
+              'stuck message and hold the updates cursor there ' \
+              '(stuck-message handling)'
           # The not-ready-transcript branch must hold the cursor (return
           # None) for a YOUNG message — returning False there would let the
           # cursor advance past a message CV is still transcribing — but it
