@@ -1099,7 +1099,7 @@ class CarbonVoiceAdapter(BasePlatformAdapter):
           2. ``api.list_channel_message_index`` → ids + ``parent_message_id``.
           3. Client-side filter to thread (root + replies whose
              ``parent_message_id == thread_id``).
-          4. ``api.get_messages_by_ids_v5`` for the last ``limit``
+          4. ``api.get_messages_by_ids_v6`` for the last ``limit``
              transcripts in chronological order.
           5. Exclude the current triggering message (it will be delivered
              as the user message itself) and exclude our own prior bot
@@ -1177,10 +1177,10 @@ class CarbonVoiceAdapter(BasePlatformAdapter):
 
         ids = [mid for mid, _, _ in thread_items]
         try:
-            full = await self._api.get_messages_by_ids_v5(channel_id, ids)
+            full = await self._api.get_messages_by_ids_v6(channel_id, ids)
         except Exception as exc:
             logger.debug(
-                "carbonvoice: get_messages_by_ids_v5 for thread context failed: %s",
+                "carbonvoice: get_messages_by_ids_v6 for thread context failed: %s",
                 exc,
             )
             return ""
@@ -1766,44 +1766,44 @@ class CarbonVoiceAdapter(BasePlatformAdapter):
                     message_id, age,
                 )
 
-        # V5 source-of-truth enrichment. The socket / v3-poll push gives
-        # us a V2-shaped payload that trails the v5 GET on async fields:
+        # v6 source-of-truth enrichment. The socket push gives us a
+        # legacy-shaped payload that trails the REST read on async fields:
         # ``tagged_user_ids`` is empty here until a backend job resolves
         # the tag picker selection, and attachment metadata can lag the
-        # same way. CV's v5 endpoint is the canonical post-resolution
-        # state — the Flutter client follows the same "socket = signal,
-        # REST = truth" pattern.
+        # same way. CV's ``GET /v6/messages/{id}`` is the canonical
+        # post-resolution state — the Flutter client follows the same
+        # "socket = signal, REST = truth" pattern.
         #
         # We do the GET only here, after the cheap-reject gates above
         # (self-loop, allowlist, dedupe, empty-transcript), so empty
         # ``message:created`` events don't pay the HTTP. On fetch
-        # failure we keep the V2 payload — defensive, so a transient
-        # /v5 hiccup doesn't drop an otherwise-deliverable message.
-        # The parse helpers (``extract_*``) prefer V5 fields when
-        # present, so reassigning ``msg`` is enough — no further
-        # downstream changes needed.
+        # failure we keep the pushed payload — defensive, so a transient
+        # hiccup doesn't drop an otherwise-deliverable message.
+        # ``get_message_v6`` normalises MessageV6 to the same legacy shape
+        # the socket delivers, so reassigning ``msg`` is enough — no
+        # further downstream changes needed.
         if self._api is not None:
             try:
-                enriched = await self._api.get_message_v5(message_id)
+                enriched = await self._api.get_message_v6(message_id)
             except Exception as exc:
                 logger.debug(
-                    "carbonvoice: v5 enrichment failed for %s: %s — "
-                    "continuing with v2 payload",
+                    "carbonvoice: v6 enrichment failed for %s: %s — "
+                    "continuing with pushed payload",
                     message_id, exc,
                 )
                 enriched = None
             if enriched:
-                # Staleness guard: the v5 GET can race a write the push
-                # payload already reflects (read-replica lag) — if the v2
-                # copy has ``tagged_user_ids`` and the v5 copy doesn't,
-                # keep the populated array rather than letting the
+                # Staleness guard: the REST read can race a write the push
+                # payload already reflects (read-replica lag) — if the
+                # pushed copy has ``tagged_user_ids`` and the fetched copy
+                # doesn't, keep the populated array rather than letting the
                 # enrichment erase the mention.
                 if not enriched.get("tagged_user_ids") and msg.get("tagged_user_ids"):
                     enriched["tagged_user_ids"] = msg["tagged_user_ids"]
                 msg = enriched
-                # Re-pull transcript from the (canonical) v5 payload —
-                # usually the same string but keeps everything in one
-                # shape after this point.
+                # Re-pull transcript from the canonical payload — usually
+                # the same string but keeps everything in one shape after
+                # this point.
                 transcript = extract_transcript(msg) or transcript
 
         # Server-side dedup (persistent, survives restarts). We put an ack
@@ -1816,9 +1816,9 @@ class CarbonVoiceAdapter(BasePlatformAdapter):
         # keeps re-fetching the same message; without a durable marker the
         # SeenCache eventually lapses and the agent re-answers the same
         # message (observed: one message dispatched 5× across a day of
-        # restarts). We read ``reaction_summary`` from the canonical v5
+        # restarts). We read ``reaction_summary`` from the canonical v6
         # payload above. Mark seen too so immediate re-polls skip without
-        # paying another v5 GET. Mirrors the Claude Code Channel's
+        # paying another v6 GET. Mirrors the Claude Code Channel's
         # reaction-based ``isProcessed`` dedup.
         if (
             self._reactions is not None
@@ -2270,7 +2270,7 @@ class CarbonVoiceAdapter(BasePlatformAdapter):
             msg = by_id.get(prompt_id)
             if msg is None:
                 try:
-                    msg = await self._api.get_message_v5(prompt_id)
+                    msg = await self._api.get_message_v6(prompt_id)
                 except Exception:
                     msg = None
             if not isinstance(msg, dict):

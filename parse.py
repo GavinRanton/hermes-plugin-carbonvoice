@@ -126,7 +126,7 @@ def extract_share_link_id(msg: Dict[str, Any]) -> Optional[str]:
     (and the deprecated alias ``forward_id`` — both are set to the same
     value by ``addForwardToMessage``). Present on V2 and V5 payloads. The
     original message's content is NOT on the wrapper; it must be fetched
-    via ``GET /v3/message-sharelinks/{share_link_id}`` (the same flow
+    via ``GET /v6/message-sharelinks/{share_link_id}`` (the same flow
     cv-claude-channels uses).
     """
     return first_str(msg.get("share_link_id"), msg.get("forward_id"))
@@ -215,7 +215,7 @@ def is_user_mentioned(msg: Dict[str, Any], user_id: Optional[str]) -> bool:
     Hermes *after* the audio is recorded, so the tag lands on a later
     ``message:updated`` rather than at create time. The gate's
     ``revisitable`` rejection (leaves the message out of the dedup cache)
-    plus the ``get_message_v5`` enrichment guarantee that updated payload
+    plus the ``get_message_v6`` enrichment guarantee that updated payload
     is re-evaluated with the now-populated array.
     """
     if not user_id:

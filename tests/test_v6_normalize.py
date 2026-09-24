@@ -41,6 +41,7 @@ normalize_v6 = parse.normalize_v6
 def _v6(**overrides):
     base = {
         "id": "M1",
+        "name": "Standup notes",
         "type": "channel",
         "kind": "audio",
         "created_at": "2026-09-24T10:00:00.000Z",
@@ -86,6 +87,7 @@ def test_core_field_mapping():
     # Shape-identical fields pass through untouched.
     assert out["tagged_user_ids"] == ["BOT"]
     assert out["share_link_id"] == "SL1"
+    assert out["name"] == "Standup notes"  # MessageV6 carries name (cv-api #483)
     assert out["reaction_summary"]["top_user_reactions"][0]["user_id"] == "BOT"
     assert out["is_text_message"] is False  # kind=audio
     # Renamed v6 keys must not leak through (esp. thread_id == id).
