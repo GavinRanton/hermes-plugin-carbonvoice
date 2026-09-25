@@ -1,3 +1,3 @@
-from .setup import register
+from .registration import register
 
 __all__ = ["register"]
